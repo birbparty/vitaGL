@@ -47,6 +47,7 @@ SceGxmRenderTarget *gxm_render_target; // Display render target
 SceGxmColorSurface gxm_color_surfaces[DISPLAY_MAX_BUFFER_COUNT]; // Display color surfaces
 uint8_t gxm_display_buffer_count = 3; // Display buffers count
 void *gxm_color_surfaces_addr[DISPLAY_MAX_BUFFER_COUNT]; // Display color surfaces memblock starting addresses
+SceUID gxm_color_surface_memblocks[DISPLAY_MAX_BUFFER_COUNT]; // Dedicated CDRAM memblocks backing the display color surfaces
 SceGxmSyncObject *gxm_sync_objects[DISPLAY_MAX_BUFFER_COUNT]; // Display sync objects
 unsigned int gxm_front_buffer_index = 0; // Display front buffer id
 unsigned int gxm_back_buffer_index; // Display back buffer id
@@ -472,7 +473,21 @@ void init_display_color_surfaces(GLboolean is_swap) {
 	for (int i = 0; i < gxm_display_buffer_count; i++) {
 		// Allocating color surface memblock
 		if (!system_app_mode) {
-			gxm_color_surfaces_addr[i] = gpu_alloc_mapped_aligned_for_gpu(4096, VGL_ALIGN(4 * DISPLAY_STRIDE * DISPLAY_HEIGHT, 1 * 1024 * 1024));
+			// Real PS Vita display scanout rejects display buffers suballocated from a
+			// larger CDRAM pool (sceDisplaySetFrameBuf -> SCE_DISPLAY_ERROR_INVALID_ADDR
+			// 0x80290002), leaving a black screen even though rendering is correct.
+			// Vita3K hides this (it presents loosely). Allocate each display buffer as its
+			// own dedicated 1MiB-aligned CDRAM memblock so the display controller accepts
+			// it; fall back to the pool allocator if the memblock allocation fails.
+			uint32_t display_size = VGL_ALIGN(4 * DISPLAY_STRIDE * DISPLAY_HEIGHT, 1 * 1024 * 1024);
+			gxm_color_surface_memblocks[i] = sceKernelAllocMemBlock("vitaGL_display_fb", SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, display_size, NULL);
+			if (gxm_color_surface_memblocks[i] >= 0) {
+				sceKernelGetMemBlockBase(gxm_color_surface_memblocks[i], &gxm_color_surfaces_addr[i]);
+				sceGxmMapMemory(gxm_color_surfaces_addr[i], display_size, SCE_GXM_MEMORY_ATTRIB_READ | SCE_GXM_MEMORY_ATTRIB_WRITE);
+			} else {
+				gxm_color_surface_memblocks[i] = -1;
+				gxm_color_surfaces_addr[i] = gpu_alloc_mapped_aligned_for_gpu(4096, display_size);
+			}
 			vgl_memset(gxm_color_surfaces_addr[i], 0, 4 * DISPLAY_STRIDE * DISPLAY_HEIGHT);
 		}
 
