@@ -47,7 +47,7 @@ void glsl_translate_with_global(char *text, GLenum type, GLboolean hasFrontFacin
 
 void glsl_nuke_comments(char *txt);
 
-void glsl_translator_process(shader *s);
-void glsl_translator_set_process(shader *vs, shader *fs);
+GLboolean glsl_translator_process(shader *s);
+GLboolean glsl_translator_set_process(shader *vs, shader *fs);
 
 #endif

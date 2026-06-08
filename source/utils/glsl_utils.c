@@ -1046,7 +1046,7 @@ LOOP_START:
 	}
 }
 
-void glsl_translator_process(shader *s) {
+GLboolean glsl_translator_process(shader *s) {
 	uint32_t source_size = 1 + strlen(s->source);
 	uint32_t size = 1;
 	GLboolean hasFragCoord = GL_FALSE, hasInstanceID = GL_FALSE, hasVertexID = GL_FALSE, hasPointCoord = GL_FALSE;
@@ -1086,9 +1086,19 @@ void glsl_translator_process(shader *s) {
 	vgl_log("%s:%d %s: GLSL translation input:\n\n%s\n\n", __FILE__, __LINE__, __func__, input);
 #endif
 
-	char *out = vglMalloc(strlen(input));
-	glsl_preprocess("full", input, out);
+	char *out = NULL;
+	int out_len = glsl_preprocess("full", input, &out);
 	vgl_free(input);
+	if (out_len < 0 || out == NULL) {
+		// Preprocessing failed (malformed shader, expansion error, OOM). Leave the
+		// shader uncompiled (s->prog stays NULL) so the GL layer reports a clean
+		// compile/link failure instead of the process aborting. s->source is still
+		// the original untouched buffer at this point (the realloc below is skipped).
+		if (out)
+			vgl_free(out);
+		vgl_log("%s:%d %s: shader preprocessing failed; shader not translated.\n", __FILE__, __LINE__, __func__);
+		return GL_FALSE;
+	}
 #ifdef DEBUG_GLSL_PREPROCESSOR
 	vgl_log("%s:%d %s: GLSL preprocessor output:\n\n%s\n\n", __FILE__, __LINE__, __func__, out);
 #endif
@@ -1356,9 +1366,11 @@ void glsl_translator_process(shader *s) {
 	}
 	s->size = strlen(s->source);
 	s->is_glsl = GL_FALSE;
+	return GL_TRUE;
 }
 
-void glsl_translator_set_process(shader *vs, shader *fs) {
+GLboolean glsl_translator_set_process(shader *vs, shader *fs) {
+	GLboolean ok = GL_TRUE;
 	if (vs->prog || fs->prog) {
 		glsl_is_first_shader = GL_FALSE;
 		if (vs->prog) {
@@ -1374,9 +1386,12 @@ void glsl_translator_set_process(shader *vs, shader *fs) {
 		}
 	}
 	if (!vs->prog) {
-		glsl_translator_process(vs);
+		if (!glsl_translator_process(vs))
+			ok = GL_FALSE;
 	}
 	if (!fs->prog) {
-		glsl_translator_process(fs);
+		if (!glsl_translator_process(fs))
+			ok = GL_FALSE;
 	}
+	return ok;
 }

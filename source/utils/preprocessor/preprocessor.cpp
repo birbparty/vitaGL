@@ -527,11 +527,30 @@ list<Token> getTokLine(char* buff)
 // ######################################################################
 
 // ----------------------------------------------------------------------
+// Safe accessor for tokNames[]: tok.type is used directly as an index in
+// several places, but it can hold values past the end of tokNames[] (the
+// array only covers punctuation/operators/directives, indices 0..PRAGMA,
+// whereas token types run up to NOEXPAND). An out-of-range or corrupt type
+// must produce a diagnosable error, not an out-of-bounds read.
+// ----------------------------------------------------------------------
+
+const char *tokName(int type)
+{
+    if (type < 0 || type >= (int)(sizeof(tokNames) / sizeof(tokNames[0])))
+        wrtError("internal: token type out of range for tokNames[]");  // throws; caught at glsl_preprocess boundary
+    return tokNames[type];
+}
+
+// ######################################################################
+
+// ----------------------------------------------------------------------
 // Write out a token depending on its type. Write a space after the token
 // ----------------------------------------------------------------------
 
 void writeTok(Token tok)
 {
+    if (g_outfile == NULL)   // output sink not set for this mode; never fprintf(NULL)
+        return;
     if (tok.type == IDENTIFIER || tok.type==NUMBER)
     {
         fprintf(g_outfile, "%s", tok.id.c_str());
@@ -562,7 +581,7 @@ void writeTok(Token tok)
     }
     else
     {
-        fprintf(g_outfile, "%s", tokNames[tok.type]);
+        fprintf(g_outfile, "%s", tokName(tok.type));
     }
 }
 
@@ -604,7 +623,7 @@ string tok2Str(Token tok)
     }
     else
     {
-        return tokNames[tok.type];
+        return tokName(tok.type);
     }
 }
 
@@ -1491,7 +1510,7 @@ void processLine(list<list<Token>>::iterator &it_line, map<string,Var> &vars, co
                     }
                     else
                     {
-                        include += tokNames[tok.type];
+                        include += tokName(tok.type);
                     }
                     it++;
                 }
@@ -2135,13 +2154,51 @@ string preprocess(string mode, string infile, string outfile, list<string> defin
 }
 
 extern "C" {
-void glsl_preprocess(char *mode, const char *infile, char *output) {
-	std::list<std::string> dummy;
-	std::list<std::string> defines;
-	defines.push_back("#define GL_ES 1");
-	defines.push_back("#define VITAGL");
-	std::map<std::string, std::string> hasCppAttributeMap;
-	std::string out = preprocessor::preprocess(mode, infile, "", defines, dummy, dummy, dummy, hasCppAttributeMap, false);
-	strcpy(output, out.c_str());
+
+// Provided by vitaGL's allocator (vitaGL.h). Forward-declared here to avoid pulling
+// the full GL headers into the standalone preprocessor translation unit. The returned
+// buffer is owned by the caller and must be released with vgl_free().
+void *vglMalloc(uint32_t size);
+
+// Preprocess the shader source in `infile` (the source text itself, not a path) and
+// hand back a freshly-allocated, exactly-sized, NUL-terminated buffer in *output
+// (caller frees with vgl_free). Returns the number of bytes written (excluding the
+// NUL), or -1 on any error. On error *output is left NULL.
+//
+// Previously this wrote into a caller buffer via an unbounded strcpy() (the caller
+// sized it at strlen(input), with no room for macro expansion or even the NUL), which
+// corrupted the heap; and any malformed shader threw a std::string straight across
+// this extern "C" boundary, aborting the process. Both are fixed here: the copy is
+// sized from the actual result, and every exception is caught and turned into -1 so
+// the GL layer can report a clean compile/link error instead of crashing.
+int glsl_preprocess(const char *mode, const char *infile, char **output) {
+	*output = NULL;
+	try {
+		std::list<std::string> dummy;
+		std::list<std::string> defines;
+		defines.push_back("#define GL_ES 1");
+		defines.push_back("#define VITAGL");
+		std::map<std::string, std::string> hasCppAttributeMap;
+		std::string out = preprocessor::preprocess(mode, infile, "", defines, dummy, dummy, dummy, hasCppAttributeMap, false);
+
+		size_t n = out.size();
+		char *buf = (char *)vglMalloc((uint32_t)(n + 1));
+		if (buf == NULL) {
+			vgl_log("GLSL Preprocessor: ERROR: out of memory allocating %u bytes for output\n", (unsigned)(n + 1));
+			return -1;
+		}
+		memcpy(buf, out.data(), n);
+		buf[n] = '\0';
+		*output = buf;
+		return (int)n;
+	}
+	catch (const std::string &e) {
+		vgl_log("GLSL Preprocessor: ERROR: %s\n", e.c_str());
+		return -1;
+	}
+	catch (...) {
+		vgl_log("GLSL Preprocessor: ERROR: unhandled exception during preprocessing\n");
+		return -1;
+	}
 }
 }

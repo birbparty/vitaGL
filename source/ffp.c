@@ -682,15 +682,29 @@ uint8_t reload_ffp_shaders(SceGxmVertexAttribute *attrs, SceGxmVertexStream *str
 		} else
 #endif
 		{
-			// Restarting vitaShaRK if we released it before
-			if (!is_shark_online)
-				start_shader_compiler();
+			// Restarting vitaShaRK if we released it before. If the compiler can't be
+			// brought online, bail this reload rather than compiling into uninitialized
+			// state (mirrors the custom-shader guard in glCompileShader).
+			if (!is_shark_online && !start_shader_compiler()) {
+				vgl_log("%s:%d: %s: shader compiler unavailable; skipping FFP vertex shader build.\n", __FILE__, __LINE__, __func__);
+				return draw_mask_state;
+			}
 
 			// Compiling the new shader
 			char vshader[8192];
-			sprintf(vshader, ffp_vert_src, mask.clip_planes_num, mask.num_textures, mask.has_colors, mask.lights_num, mask.shading_mode, mask.normalize, mask.fixed_mask, mask.pos_fixed_mask, WVP_ON_GPU, mask.fast_perspective_correction);
+			snprintf(vshader, sizeof(vshader), ffp_vert_src, mask.clip_planes_num, mask.num_textures, mask.has_colors, mask.lights_num, mask.shading_mode, mask.normalize, mask.fixed_mask, mask.pos_fixed_mask, WVP_ON_GPU, mask.fast_perspective_correction);
 			uint32_t size = strlen(vshader);
 			SceGxmProgram *t = shark_compile_shader_extended(vshader, &size, SHARK_VERTEX_SHADER, compiler_opts, compiler_fastmath, compiler_fastprecision, compiler_fastint);
+			if (!t) {
+				// SceShaccCg rejected the source (or the compiler went away). Bail without
+				// dereferencing/copying a NULL program; ffp_dirty_vert stays set so the
+				// build is retried on the next draw. NOTE: the historical `if (t)` guard
+				// here was compiled in only under DUMP_SHADER_SOURCES, so a NULL result
+				// otherwise fell through to vgl_fast_memcpy(dst, NULL, size) and a NULL
+				// program registration/deref.
+				vgl_log("%s:%d: %s: FFP vertex shader compilation failed; skipping reload.\n", __FILE__, __LINE__, __func__);
+				return draw_mask_state;
+			}
 #ifdef DUMP_SHADER_SOURCES
 			if (t) {
 #endif
@@ -911,68 +925,79 @@ uint8_t reload_ffp_shaders(SceGxmVertexAttribute *attrs, SceGxmVertexStream *str
 		} else
 #endif
 		{
-			// Restarting vitaShaRK if we released it before
-			if (!is_shark_online)
-				start_shader_compiler();
+			// Restarting vitaShaRK if we released it before. Bail if the compiler can't
+			// be brought online rather than compiling into uninitialized state.
+			if (!is_shark_online && !start_shader_compiler()) {
+				vgl_log("%s:%d: %s: shader compiler unavailable; skipping FFP fragment shader build.\n", __FILE__, __LINE__, __func__);
+				return draw_mask_state;
+			}
 
 			// Compiling the new shader
 			char fshader[8192];
 			char texenv_shad[8192] = {0};
+			size_t texenv_len = 0;   // running length, to append safely (no overlapping sprintf)
 			GLboolean unused_mode[5] = {GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
 			for (int i = 0; i < mask.num_textures; i++) {
 #ifndef DISABLE_TEXTURE_COMBINER
 				char tmp[1024];
 #endif
+				// Append at the running offset: sprintf(buf, "%s...", buf, ...) reads and
+				// writes the same buffer (overlapping source/dest) which is undefined
+				// behavior. snprintf at texenv_len is both well-defined and bounded.
 				switch (texture_units[base_texture_id + i].env_mode) {
 				case MODULATE:
 					if (unused_mode[MODULATE]) {
-						sprintf(texenv_shad, "%s\n%s", texenv_shad, modulate_src);
+						texenv_len += snprintf(texenv_shad + texenv_len, sizeof(texenv_shad) - texenv_len, "\n%s", modulate_src);
 						unused_mode[MODULATE] = GL_FALSE;
 					}
 					break;
 				case DECAL:
 					if (unused_mode[DECAL]) {
-						sprintf(texenv_shad, "%s\n%s", texenv_shad, decal_src);
+						texenv_len += snprintf(texenv_shad + texenv_len, sizeof(texenv_shad) - texenv_len, "\n%s", decal_src);
 						unused_mode[DECAL] = GL_FALSE;
 					}
 					break;
 				case BLEND:
 					if (unused_mode[BLEND]) {
-						sprintf(texenv_shad, "%s\n%s", texenv_shad, blend_src);
+						texenv_len += snprintf(texenv_shad + texenv_len, sizeof(texenv_shad) - texenv_len, "\n%s", blend_src);
 						unused_mode[BLEND] = GL_FALSE;
 					}
 					break;
 				case ADD:
 					if (unused_mode[ADD]) {
-						sprintf(texenv_shad, "%s\n%s", texenv_shad, add_src);
+						texenv_len += snprintf(texenv_shad + texenv_len, sizeof(texenv_shad) - texenv_len, "\n%s", add_src);
 						unused_mode[ADD] = GL_FALSE;
 					}
 					break;
 				case REPLACE:
 					if (unused_mode[REPLACE]) {
-						sprintf(texenv_shad, "%s\n%s", texenv_shad, replace_src);
+						texenv_len += snprintf(texenv_shad + texenv_len, sizeof(texenv_shad) - texenv_len, "\n%s", replace_src);
 						unused_mode[REPLACE] = GL_FALSE;
 					}
 					break;
 #ifndef DISABLE_TEXTURE_COMBINER
 				case COMBINE:
 					setup_combiner_pass(i, tmp);
-					sprintf(texenv_shad, "%s\n%s", texenv_shad, tmp);
+					texenv_len += snprintf(texenv_shad + texenv_len, sizeof(texenv_shad) - texenv_len, "\n%s", tmp);
 					break;
 #endif
 				default:
 					break;
 				}
+				// snprintf returns the length it WOULD have written; clamp so a
+				// truncated append can't underflow (sizeof - texenv_len) next iteration.
+				if (texenv_len >= sizeof(texenv_shad))
+					texenv_len = sizeof(texenv_shad) - 1;
 			}
 #ifdef HAVE_HIGH_FFP_TEXUNITS
-			sprintf(fshader, ffp_frag_src, texenv_shad, alpha_op,
+			snprintf(fshader, sizeof(fshader), ffp_frag_src, texenv_shad, alpha_op,
 				mask.num_textures, mask.has_colors, mask.fog_mode,
 				(mask.tex_env_mode_pass0 != COMBINE) ? mask.tex_env_mode_pass0 : 50,
 				(mask.tex_env_mode_pass1 != COMBINE) ? mask.tex_env_mode_pass1 : 51,
 				(mask.tex_env_mode_pass2 != COMBINE) ? mask.tex_env_mode_pass2 : 52,
 				mask.lights_num, mask.shading_mode, mask.point_sprite, mask.fast_perspective_correction, mask.srgb_mode);
 #else
-			sprintf(fshader, ffp_frag_src, texenv_shad, alpha_op,
+			snprintf(fshader, sizeof(fshader), ffp_frag_src, texenv_shad, alpha_op,
 				mask.num_textures, mask.has_colors, mask.fog_mode,
 				(mask.tex_env_mode_pass0 != COMBINE) ? mask.tex_env_mode_pass0 : 50,
 				(mask.tex_env_mode_pass1 != COMBINE) ? mask.tex_env_mode_pass1 : 51,
@@ -980,6 +1005,12 @@ uint8_t reload_ffp_shaders(SceGxmVertexAttribute *attrs, SceGxmVertexStream *str
 #endif
 			uint32_t size = strlen(fshader);
 			SceGxmProgram *t = shark_compile_shader_extended(fshader, &size, SHARK_FRAGMENT_SHADER, compiler_opts, compiler_fastmath, compiler_fastprecision, compiler_fastint);
+			if (!t) {
+				// See the vertex path: a NULL result otherwise fell through to
+				// vgl_fast_memcpy(dst, NULL, size) and a NULL program registration.
+				vgl_log("%s:%d: %s: FFP fragment shader compilation failed; skipping reload.\n", __FILE__, __LINE__, __func__);
+				return draw_mask_state;
+			}
 #ifdef DUMP_SHADER_SOURCES
 			if (t) {
 #endif

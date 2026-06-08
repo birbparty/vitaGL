@@ -2197,6 +2197,18 @@ void glLinkProgram(GLuint progr) {
 		vgl_log("%s:%d: %s: A program has been re-linked. vitaGL doesn't support re-linking, glitches may happen.\n", __FILE__, __LINE__, __func__);
 		return;
 	}
+
+#ifndef SKIP_ERROR_HANDLING
+	// If translation/compilation failed above, the shader programs are NULL. Bail
+	// without marking the program linked so glGetProgramiv(GL_LINK_STATUS) reports
+	// GL_FALSE, rather than falling through and dereferencing a NULL SceGxmProgram
+	// (e.g. sceGxmProgramGetParameterCount(p->fshader->prog) below).
+	if (!p->vshader->prog || !p->fshader->prog) {
+		vgl_log("%s:%d: %s: %s shader failed to compile/translate; program not linked.\n", __FILE__, __LINE__, __func__, p->vshader->prog ? "fragment" : "vertex");
+		return;
+	}
+#endif
+
 	p->status = PROG_LINKED;
 	
 	// Set up uniform buffers
