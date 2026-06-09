@@ -106,6 +106,19 @@ static GLint build_program(const char *vsrc, const char *fsrc) {
 	return status;
 }
 
+// Breadcrumb: append a line to a progress file and flush by closing it, so that
+// after a hard crash the LAST line on disk is the step we died on. Native aborts
+// are uncatchable, so this is the only reliable "how far did we get" signal.
+static void crumb(const char *msg) {
+	SceUID f = sceIoOpen("ux0:data/vitaGL_verify_progress.txt",
+		SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0777);
+	if (f < 0)
+		return;
+	sceIoWrite(f, msg, strlen(msg));
+	sceIoWrite(f, "\n", 1);
+	sceIoClose(f);
+}
+
 static void write_results(void) {
 	SceUID f = sceIoOpen("ux0:data/vitaGL_verify.txt",
 		SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
@@ -138,9 +151,14 @@ static void ffp_quad(float x0, float y0, float x1, float y1, float r, float g, f
 }
 
 int main(void) {
+	// Fresh breadcrumb trail each run (the previous file, if any, is stale).
+	sceIoRemove("ux0:data/vitaGL_verify_progress.txt");
+	crumb("00 main entered; before vglInit");
+
 	// Match the inputty repro exactly: custom-threshold init drives the
 	// dedicated-CDRAM display path added on this branch (the reported "ok=0").
 	vglInitWithCustomThreshold(0, 960, 544, 8 * MB, 8 * MB, 0, 26 * MB, SCE_GXM_MULTISAMPLE_NONE);
+	crumb("00 vglInit returned");
 
 	glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
 	glMatrixMode(GL_PROJECTION);
@@ -151,39 +169,52 @@ int main(void) {
 
 	for (int i = 0; i < T_COUNT; i++) { test_pass[i] = 0; test_run[i] = 0; }
 
+	crumb("00 init done; entering tests");
+
 	// --- Test 1: FFP draw (inputty repro) ---
 	// One FFP draw forces vitaGL to synthesize + compile its macro-heavy FFP
 	// shader. Surviving the swap below means it did not crash.
+	crumb("01 FFP draw: start (first FFP draw + swap)");
 	glClear(GL_COLOR_BUFFER_BIT);
 	ffp_quad(0, 0, 10, 10, 1.0f, 1.0f, 1.0f);
 	vglSwapBuffers(GL_FALSE);
 	test_run[T_FFP_DRAW] = 1;
 	test_pass[T_FFP_DRAW] = 1;
+	crumb("01 FFP draw: OK");
 
 	// --- Test 2: valid GLSL ES 1.00 program links ---
+	crumb("02 GLSL ES 1.00: start");
 	test_run[T_GLSL_100] = 1;
 	test_pass[T_GLSL_100] = (build_program(vs_100, fs_100) == GL_TRUE);
+	crumb("02 GLSL ES 1.00: OK");
 
 	// --- Test 3: valid GLSL ES 3.00 program builds without crashing (boxy) ---
 	// Pass = we returned from build_program at all. Record link status too, but
 	// not crashing is the load-bearing assertion for this case.
+	crumb("03 GLSL ES 3.00 (#version 300 es): start");
 	(void)build_program(vs_300, fs_300);
 	test_run[T_GLSL_300ES] = 1;
 	test_pass[T_GLSL_300ES] = 1;
+	crumb("03 GLSL ES 3.00: OK");
 
 	// --- Test 4: preprocessor-tripping shader fails cleanly, no abort ---
 	// Reaching the next line proves the throw no longer aborts the process;
 	// a GL_FALSE link status proves the failure is reported, not silently OK.
+	crumb("04 malformed (#error): start");
 	{
 		GLint linked = build_program(vs_100, fs_malformed);
 		test_run[T_GLSL_MALFORMED] = 1;
 		test_pass[T_GLSL_MALFORMED] = (linked == GL_FALSE);
 	}
+	crumb("04 malformed (#error): OK");
 
 	// --- Test 5: macro expansion >> input does not corrupt the heap ---
+	crumb("05 macro-expansion: start");
 	test_run[T_GLSL_EXPAND] = 1;
 	test_pass[T_GLSL_EXPAND] = (build_program(vs_100, fs_expand) == GL_TRUE);
+	crumb("05 macro-expansion: OK");
 
+	crumb("06 all tests complete; writing results");
 	write_results();
 
 	int overall = 1;
