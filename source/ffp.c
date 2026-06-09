@@ -2524,6 +2524,20 @@ void glBegin(GLenum mode) {
 	// Performing a scene reset if necessary
 	scene_reset();
 
+#ifndef SKIP_ERROR_HANDLING
+	// Immediate mode writes vertices into the GL1 "legacy" pool. If vglInit* was called
+	// with pool_size == 0 that pool is never allocated (gxm.c allocates it only under
+	// `if (legacy_pool_size)`), leaving legacy_pool_ptr == NULL — so the glVertex* writes
+	// would scribble through a NULL pointer and corrupt memory (a hard crash, not a GL
+	// error). Fail safe: emit a clear diagnostic, raise GL_INVALID_OPERATION, and reset
+	// phase so the following glVertex/glEnd calls no-op via their own phase guards.
+	if (legacy_pool_ptr == NULL) {
+		vgl_log("%s:%d %s: immediate mode requires a non-zero legacy vertex pool; pass a non-zero first argument (pool_size) to vglInit/vglInitExtended/vglInitWithCustomSizes/vglInitWithCustomThreshold. Skipping primitive.\n", __FILE__, __LINE__, __func__);
+		phase = NONE;
+		SET_GL_ERROR(GL_INVALID_OPERATION)
+	}
+#endif
+
 	// Tracking desired primitive
 	ffp_mode = mode;
 
