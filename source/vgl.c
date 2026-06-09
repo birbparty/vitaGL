@@ -88,6 +88,13 @@ float fullscreen_z_scale = 0.5f;
 
 uint32_t vsync_interval = 1; // Current setting for VSync
 
+#ifdef TEXTURES_SPEEDHACK
+// Flavor marker so a built archive's speedhack state is verifiable:
+//   arm-vita-eabi-nm libvitaGL.a | grep vgl_textures_speedhack
+// (stock and speedhack builds are otherwise nm-indistinguishable).
+const int vgl_textures_speedhack = 1;
+#endif
+
 // Disable color buffer shader
 uint16_t *depth_clear_indices = NULL; // Memblock starting address for clear screen indices
 

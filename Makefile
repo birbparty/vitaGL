@@ -95,6 +95,12 @@ ifeq ($(INDICES_SPEEDHACK),1)
 CFLAGS += -DINDICES_SPEEDHACK
 endif
 
+# birbparty fork default: TEXTURES_SPEEDHACK ON. The texture copy-on-write it
+# removes cost a whole-atlas GPU alloc + memcpy + free per frame under boxy's
+# text-atlas re-upload pattern (clckr on device: 71 -> 16.7 ms/f). Apps that
+# mutate textures mid-scene may need it off: make TEXTURES_SPEEDHACK=0.
+# Flavor is nm-assertable: arm-vita-eabi-nm libvitaGL.a | grep vgl_textures_speedhack
+TEXTURES_SPEEDHACK ?= 1
 ifeq ($(TEXTURES_SPEEDHACK),1)
 CFLAGS += -DTEXTURES_SPEEDHACK
 endif
