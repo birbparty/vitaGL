@@ -175,9 +175,13 @@ int main(void) {
 	// One FFP draw forces vitaGL to synthesize + compile its macro-heavy FFP
 	// shader. Surviving the swap below means it did not crash.
 	crumb("01 FFP draw: start (first FFP draw + swap)");
+	crumb("01a before glClear");
 	glClear(GL_COLOR_BUFFER_BIT);
+	crumb("01b glClear done; before FFP draw (glBegin..glEnd builds+compiles FFP shader)");
 	ffp_quad(0, 0, 10, 10, 1.0f, 1.0f, 1.0f);
+	crumb("01c FFP draw done; before vglSwapBuffers");
 	vglSwapBuffers(GL_FALSE);
+	crumb("01d swap done");
 	test_run[T_FFP_DRAW] = 1;
 	test_pass[T_FFP_DRAW] = 1;
 	crumb("01 FFP draw: OK");
