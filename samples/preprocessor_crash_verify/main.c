@@ -155,9 +155,14 @@ int main(void) {
 	sceIoRemove("ux0:data/vitaGL_verify_progress.txt");
 	crumb("00 main entered; before vglInit");
 
-	// Match the inputty repro exactly: custom-threshold init drives the
-	// dedicated-CDRAM display path added on this branch (the reported "ok=0").
-	vglInitWithCustomThreshold(0, 960, 544, 8 * MB, 8 * MB, 0, 26 * MB, SCE_GXM_MULTISAMPLE_NONE);
+	// SINGLE-VARIABLE EXPERIMENT: identical to the inputty repro EXCEPT the first
+	// argument (the GL1 immediate-mode "legacy pool" size) is now 8 MB instead of 0.
+	// The inputty repro passed 0; with 0, gxm.c only allocates the legacy pool under
+	// `if (legacy_pool_size)`, so legacy_pool_ptr stays NULL and the first immediate-
+	// mode glVertex (ffp.c) writes through NULL -> memory corruption -> crash. If this
+	// build clears the FFP draw, the legacy pool is conclusively the root cause (the
+	// stock immediate_mode sample works for the same reason: it passes vglInit(0x800000)).
+	vglInitWithCustomThreshold(8 * MB, 960, 544, 8 * MB, 8 * MB, 0, 26 * MB, SCE_GXM_MULTISAMPLE_NONE);
 	crumb("00 vglInit returned");
 
 	glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
